@@ -1,0 +1,199 @@
+//  run with MPI:  ff-mpirun -np 4 script.edp
+verbosity=0;
+load "PETSc"
+string mkeigDir = "mkdir -p output_base";
+int execDir = exec(mkeigDir);
+include "getARGV.idp"
+
+
+int maxNIt = 2000;
+real beta = 1.0/9.0;
+real We=0.05;
+real WeFinal=0.4;
+real dWe=0.05;
+real sqrt2=sqrt(2.);
+real kDCS = 5e-5; //polymer diffusion
+real cs=0.3; //SUPG
+
+macro div(u1, u2)  (dx(u1) + dy(u2))//
+macro epsilon(u,v) [dx(u),dy(v),(dy(u)+dx(v))/sqrt2] //
+macro Divergence(ux, uy) (dx(ux) + dy(uy)) //
+macro divTensor(G11,G12,G21,G22) [dx(G11)+dy(G21), dx(G12)+dy(G22)] //
+macro tensorDotP(A11, A12, A21, A22, B11, B12, B21, B22)  [A11*B11 + A12*B21, A11*B12+
+A12*B22, A21*B11 + A22*B21, A21*B12+A22*B22] //
+macro vecDotGradTensor(u1, u2, t11, t12 ,t21, t22) [u1*dx(t11)+u2*dy(t11), u1*dx(t12)+u2*dy(t12),u1*dx(t21)+u2*dy(t21),u1*dx(t22)+u2*dy(t22)]//
+
+
+load "gmsh"
+mesh Th = gmshload("../../mesh/M2.msh");
+macro dimension()2//
+include "macro_ddm.idp"
+
+macro def(i)[i,i#B,i#C, i#D,i#E,i#F,i#G, i#H,i#I,i#J]//
+macro init(i)[i,i,i, i,i,i,i, i,i,i]//
+
+fespace Mh(Th, P1);
+func Pk = [P2,P2,P1, P1,P1,P1,P1, P1,P1,P1];
+fespace XXMh(Th, Pk);
+
+macro TauDCS(t11,t12,t12,t22) 1.0 //
+
+
+//SUPG
+Mh h = hTriangle;
+macro S(s11) s11+cs*h/sqrt(u1^2+u2^2+1e-12)*(u1*dx(s11)+u2*dy(s11)) //
+
+
+Mat J;
+int[int] n2o;       // need to know how to go from the local to the global mesh
+mesh ThBackup = Th; // need to backup the original global mesh
+macro ThN2O()n2o//
+createMat(Th, J, Pk)
+
+XXMh [u1, u2, p, G11, G12, G21, G22,t11,t12,t22];
+XXMh [du1, du2, dp, dG11, dG12, dG21, dG22,dt11,dt12,dt22];
+XXMh [u1c, u2c, pc, G11c, G12c, G21c, G22c,t11c,t12c,t22c];
+
+
+fespace XXMhBackup(ThBackup, Pk);
+XXMhBackup def(uG);//, def(uReduce);
+int[int] rest = restrict(XXMh, XXMhBackup, n2o);
+[u1, u2, p, G11, G12, G21, G22,t11,t12,t22] = [0,0,0, 0,0,0,0, 0,0,0];
+
+//For restart
+// ifstream fu1("../M2_Wi0.3.txt");
+// fu1>>uG[];
+// for[i, v : rest] u1[][i] = uG[][v]; // going from global to local
+
+
+
+varf vJ([du1, du2, dp, dG11, dG12, dG21, dG22,dt11,dt12,dt22], [v1, v2, q, w11, w12, w21, w22, s11, s12, s22])
+		  = int2d(Th)(
+	         2.*epsilon(du1,du2)'*epsilon(v1,v2)
+			 - dp * Divergence(v1, v2)
+			 - [v1,v2]'*divTensor(dt11,dt12,dt12,dt22)
+	         + (1-beta)*(
+    	           [v1,v2]'*divTensor(dG11,dG12,dG21,dG22)
+       		      + [v1,v2]'*divTensor(dG11,dG21,dG12,dG22)
+            	)
+
+		     - q * Divergence(du1, du2)
+	         + [w11, w12, w21, w22]'*[dG11,dG12,dG21,dG22]
+    	     - [w11, w12, w21, w22]'*[dx(du1),dx(du2),dy(du1),dy(du2)] //DEVSSG
+			 - 1e-10*dp*q
+    	     + [S(s11),S(s12),S(s12),S(s22)]'*[dt11,dt12,dt12,dt22]
+	         + We*(
+    	           [S(s11), S(s12), S(s12), S(s22)]'*vecDotGradTensor(u1, u2, dt11, dt12 ,dt12, dt22)
+				   +[S(s11), S(s12), S(s12), S(s22)]'*vecDotGradTensor(du1, du2, t11, t12 ,t12, t22)
+
+				  -[S(s11), S(s12), S(s12), S(s22)]'*tensorDotP(t11,t12,t12,t22, dG11,dG12,dG21,dG22)
+				  -[S(s11), S(s12), S(s12), S(s22)]'*tensorDotP(dt11,dt12,dt12,dt22, G11,G12,G21,G22)
+	              -[S(s11), S(s12), S(s12), S(s22)]'*tensorDotP(G11,G21,G12,G22, dt11,dt12,dt12,dt22)
+				  -[S(s11), S(s12), S(s12), S(s22)]'*tensorDotP(dG11,dG21,dG12,dG22, t11,t12,t12,t22)
+			      )
+				  + (beta-1)*(
+        	          [S(s11), S(s12), S(s12), S(s22)]'*[dG11,dG12,dG21,dG22]
+            	    + [S(s11), S(s12), S(s12), S(s22)]'*[dG11,dG21,dG12,dG22]
+                    )
+            )
+
+            //DC
+			+ int2d(Th)(kDCS*
+				TauDCS(t11,t12,t12,t22)*(
+					 dx(s11)*dx(dt11)+2*dx(s12)*dx(dt12)+dx(s22)*dx(dt22)
+					+dy(s11)*dy(dt11)+2*dy(s12)*dy(dt12)+dy(s22)*dy(dt22)
+				)
+			)
+
+			+on(23,24,26, 66,68,69,
+				 67,73,78, 65,71,75,
+				 62,63,64, 17,19,21,
+				 2, 7, 12, 5, 10,16, du1=u1-0,du2=u2-0) //wall
+			+on(1,3, du1=u1-(1.5-6*y*y),du2=u2-0, dt11=t11-288*We*(1-beta)*y*y, dt12=t12+12*(1-beta)*y, dt22=t22-0) //inletL
+            +on(79,80,du1=u1-(6*y*y-1.5),du2=u2-0, dt11=t11-288*We*(1-beta)*y*y, dt12=t12-12*(1-beta)*y, dt22=t22-0) //inletR
+            +on(28,50,18,39,du1=u1-0,dp=p-0); //outlet
+
+varf vRes([du1, du2, dp, dG11, dG12, dG21, dG22, dt11,dt12,dt22], [v1, v2, q, w11, w12, w21, w22, s11, s12, s22])
+= int2d(Th)(
+	         2.*epsilon(u1,u2)'*epsilon(v1,v2)
+			 - p * Divergence(v1, v2)
+			 - [v1,v2]'*divTensor(t11,t12,t12,t22)
+	         + (1-beta)*(
+    	           divTensor(G11,G12,G21,G22)'*[v1,v2]
+       		      + divTensor(G11,G21,G12,G22)'*[v1,v2]
+            	)
+		     - q * Divergence(u1, u2)
+	         + [w11, w12, w21, w22]'*[G11,G12,G21,G22]
+    	     - [w11, w12, w21, w22]'*[dx(u1),dx(u2),dy(u1),dy(u2)]
+			 - 1e-10*p*q
+    	     + [S(s11),S(s12),S(s12),S(s22)]'*[t11,t12,t12,t22]
+	         + We*(
+    	           [S(s11), S(s12), S(s12), S(s22)]'*vecDotGradTensor(u1, u2, t11, t12 ,t12, t22)
+				  -[S(s11), S(s12), S(s12), S(s22)]'*tensorDotP(t11,t12,t12,t22, G11,G12,G21,G22)
+	              -[S(s11), S(s12), S(s12), S(s22)]'*tensorDotP(G11,G21,G12,G22, t11,t12,t12,t22)
+			     )
+     	     + (beta-1)*(
+        	          [S(s11), S(s12), S(s12), S(s22)]'*[G11,G12,G21,G22]
+            	    + [S(s11), S(s12), S(s12), S(s22)]'*[G11,G21,G12,G22]
+                	)
+		    )
+
+			+ int2d(Th)(kDCS*
+				TauDCS(t11,t12,t12,t22)*(
+					 dx(s11)*dx(t11)+2*dx(s12)*dx(t12)+dx(s22)*dx(t22)
+					+dy(s11)*dy(t11)+2*dy(s12)*dy(t12)+dy(s22)*dy(t22)
+				)
+			)
+
+			+on(23,24,26, 66,68,69,
+				 67,73,78, 65,71,75,
+				 62,63,64, 17,19,21,
+				 2, 7, 12, 5, 10,16, du1=u1-0,du2=u2-0) //wall
+			+on(1,3, du1=u1-(1.5-6*y*y),du2=u2-0, dt11=t11-288*We*(1-beta)*y*y, dt12=t12+12*(1-beta)*y, dt22=t22-0) //inletL
+            +on(79,80,du1=u1-(6*y*y-1.5),du2=u2-0, dt11=t11-288*We*(1-beta)*y*y, dt12=t12-12*(1-beta)*y, dt22=t22-0) //inletR
+            +on(28,50,18,39,du1=u1-0,dp=p-0); //outlet
+
+set(J, sparams = "-pc_type lu");
+func real[int] funcRes(real[int]& inPETSc) {
+    ChangeNumbering(J, u1[], inPETSc, inverse = true, exchange = true);
+    real[int] out(XXMh.ndof);
+    out = vRes(0, XXMh, tgv = -1);
+    ChangeNumbering(J, out, inPETSc);
+    return inPETSc;
+}
+func int funcJ(real[int]& inPETSc) {
+    ChangeNumbering(J, u1[], inPETSc, inverse = true, exchange = true);
+    J = vJ(XXMh, XXMh, tgv = -1);
+    return 0;
+}
+
+for(int i = 0; i < maxNIt && We <=WeFinal; ++i) {
+    if(mpirank==0){
+        cout << "Wi = " << We <<endl;
+    }
+	real[int] xPETSc;
+    ChangeNumbering(J, u1[], xPETSc);
+    SNESSolve(J, funcJ, funcRes, xPETSc, sparams = "-snes_monitor -snes_converged_reason -snes_linesearch_type bt -snes_damping 0.5 -snes_max_it 2000"); //500
+    ChangeNumbering(J, u1[], xPETSc, inverse = true, exchange = true);
+
+	[u1c, u2c, pc, G11c, G12c, G21c, G22c,t11c,t12c,t22c] = [u1, u2, p, G11, G12, G21, G22,t11,t12,t22];
+    XXMhBackup def(uReduce);//def(u1R);
+    XXMhBackup [u1R, u2R, pR, G11R, G12R, G21R, G22R,t11R,t12R,t22R];
+    u1c[] .*= J.D; // scale the solution by the partition of unity to avoid multiple summations on the overlap
+    int[int] rest = restrict(XXMh, XXMhBackup, n2o);
+    for[i, v : rest] uReduce[][v] = u1c[][i]; // going from local to global
+    mpiAllReduce(uReduce[], u1R[], mpiCommWorld, mpiSUM);
+
+    if(mpirank == 0){
+    ofstream sol("output_base/reconstr_Wi"+ We + ".sol");
+    sol << u1R[];
+
+    int[int] OrderuR = [1, 1,1, 1,1,1];
+    string DataNameuR = "reconstr";
+	string fuR = "output_base/" + DataNameuR+"_Wi"+ We + ".vtu";
+    savevtk(fuR, ThBackup, pR, [u1R, u2R], [t11R, t12R, t22R], dataname="p u tau",order=OrderuR);
+    }
+
+    We = We+dWe;
+}
+cout << " CPU "<< clock()<< " s " << endl;
