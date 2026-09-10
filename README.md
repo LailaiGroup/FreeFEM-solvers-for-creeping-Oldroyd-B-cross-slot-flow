@@ -57,7 +57,7 @@ This code accompanies the paper:
 > flow: Global linear stability and structural sensitivity analyses*,
 > arXiv:2606.21554. <https://arxiv.org/abs/2606.21554>
 
-If you use it, please cite:
+If you find our script useful for your research, please acknowledge our work by citing it!
 
 ```bibtex
 @article{zhang2026crossslot,
